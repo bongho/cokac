@@ -1,0 +1,10 @@
+.env
+bot.log
+launchd.log
+data/
+uploads/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+com.cokac.plist

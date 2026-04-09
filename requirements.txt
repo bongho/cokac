@@ -1,0 +1,4 @@
+# requires: python-telegram-bot>=21.0.0
+python-telegram-bot[job-queue]>=21.0
+aiofiles>=23.0
+python-dotenv>=1.0
