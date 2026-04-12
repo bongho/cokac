@@ -4,10 +4,10 @@ from __future__ import annotations
 import asyncio
 import time
 
-import claude
 import config_store
 import scheduler as sched_store
 import session as session_store
+from backend_factory import get_backend
 from scheduler import parse_cron
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -46,7 +46,8 @@ async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     work_dir = cfg["work_dir"] or None
 
     msg = await update.message.reply_text("⏳ 새 세션 시작 중...")
-    result = await claude.run(
+    result = await get_backend(chat_id).run(
+        chat_id,
         "새 세션을 시작합니다. 준비 완료 메시지를 한 줄로 보내주세요.",
         session_id=None,
         system_prompt=system_prompt,
@@ -201,7 +202,7 @@ async def _scheduled_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     session_id = data.get("session_id") or session_store.get_latest_session_id(chat_id)
 
     await context.bot.send_message(chat_id, f"⏰ 스케줄 실행: _{prompt[:50]}_", parse_mode="Markdown")
-    result = await claude.run(prompt, session_id)
+    result = await get_backend(chat_id).run(chat_id, prompt, session_id, None, None)
     if result.session_id:
         session_store.save_session(chat_id, result.session_id)
         session_store.update_session_stats(
@@ -240,7 +241,7 @@ async def cmd_delegate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     msg = await update.message.reply_text(f"🔀 `{target_name}` 세션에 위임 중...", parse_mode="Markdown")
-    result = await claude.run(task, session_id=target["id"])
+    result = await get_backend(chat_id).run(chat_id, task, target["id"], None, None)
     if result.session_id:
         session_store.save_session(chat_id, result.session_id, target_name)
     await msg.edit_text(result.text[:4000] or "(응답 없음)")

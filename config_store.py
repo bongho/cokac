@@ -11,6 +11,9 @@ DEFAULTS: dict[str, object] = {
     "shell_confirm": False,    # confirm before shell exec
     "auto_resume": True,       # auto-resume last session
     "work_dir": "",            # per-chat working directory
+    "backend": "claude",       # backend: claude | openai | anthropic
+    "openai_model": "gpt-4o",
+    "anthropic_model": "claude-opus-4-6",
 }
 
 

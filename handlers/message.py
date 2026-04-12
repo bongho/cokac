@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 import time
 
-import claude
 import session as session_store
+from backend_factory import get_backend
 from config_store import get_config
 from handlers.file import pop_pending_files
 from telegram import Update
@@ -64,9 +64,10 @@ async def _run_claude_streaming(
     new_session_id: str | None = None
     final_usage: dict = {}
 
+    backend = get_backend(chat_id)
     try:
-        async for delta, result_sid, usage in claude.stream_response(
-            prompt, session_id, system_prompt, work_dir
+        async for delta, result_sid, usage in backend.stream(
+            chat_id, prompt, session_id, system_prompt, work_dir
         ):
             if result_sid:
                 new_session_id = result_sid
