@@ -76,3 +76,42 @@ def set_active_session(chat_id: int | str, session_id: str) -> None:
         sessions.append(entry)
         data[key] = sessions
         _save(data)
+
+
+def update_session_stats(
+    chat_id: int | str,
+    session_id: str,
+    cost_usd: float,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> None:
+    """Accumulate usage stats into the session entry."""
+    data = _load()
+    key = str(chat_id)
+    sessions = data.get(key, [])
+    for s in sessions:
+        if s["id"] == session_id:
+            s["total_cost_usd"] = s.get("total_cost_usd", 0.0) + cost_usd
+            s["total_input_tokens"] = s.get("total_input_tokens", 0) + input_tokens
+            s["total_output_tokens"] = s.get("total_output_tokens", 0) + output_tokens
+            s["total_cache_read_tokens"] = s.get("total_cache_read_tokens", 0) + cache_read_tokens
+            s["total_cache_creation_tokens"] = s.get("total_cache_creation_tokens", 0) + cache_creation_tokens
+            s["turn_count"] = s.get("turn_count", 0) + 1
+            data[key] = sessions
+            _save(data)
+            return
+
+
+def get_all_stats(chat_id: int | str) -> dict:
+    """Aggregate stats across all sessions for this chat."""
+    sessions = get_sessions(chat_id)
+    return {
+        "session_count": len(sessions),
+        "total_cost_usd": sum(s.get("total_cost_usd", 0.0) for s in sessions),
+        "total_input_tokens": sum(s.get("total_input_tokens", 0) for s in sessions),
+        "total_output_tokens": sum(s.get("total_output_tokens", 0) for s in sessions),
+        "total_cache_read_tokens": sum(s.get("total_cache_read_tokens", 0) for s in sessions),
+        "turn_count": sum(s.get("turn_count", 0) for s in sessions),
+    }

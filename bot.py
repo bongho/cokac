@@ -32,6 +32,7 @@ from handlers.commands import (
     cmd_schedule,
     cmd_sessions,
     cmd_start,
+    cmd_usage,
 )
 from handlers.file import handle_file
 from handlers.message import handle_message
@@ -165,6 +166,7 @@ def main() -> None:
     app.add_handler(CommandHandler("schedules", _wrap_auth(cmd_schedule)))  # alias
     app.add_handler(CommandHandler("delegate", _wrap_auth(cmd_delegate)))
     app.add_handler(CommandHandler("config", _wrap_auth(cmd_config)))
+    app.add_handler(CommandHandler("usage", _wrap_auth(cmd_usage)))
 
     # Inline button callbacks
     app.add_handler(CallbackQueryHandler(callback_query))

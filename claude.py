@@ -12,10 +12,23 @@ WORK_DIR = os.environ.get("WORK_DIR") or str(Path.home())
 
 
 class ClaudeResult:
-    def __init__(self, text: str, session_id: str, cost_usd: float):
+    def __init__(
+        self,
+        text: str,
+        session_id: str,
+        cost_usd: float,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+    ):
         self.text = text
         self.session_id = session_id
         self.cost_usd = cost_usd
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cache_read_tokens = cache_read_tokens
+        self.cache_creation_tokens = cache_creation_tokens
 
 
 async def stream_response(
@@ -23,10 +36,10 @@ async def stream_response(
     session_id: str | None = None,
     system_prompt: str | None = None,
     work_dir: str | None = None,
-) -> AsyncGenerator[tuple[str, str | None], None]:
+) -> AsyncGenerator[tuple[str, str | None, dict | None], None]:
     """
-    Yield (text_chunk, session_id_or_None) tuples.
-    session_id is set only on the final 'result' event.
+    Yield (text_chunk, session_id_or_None, usage_or_None) tuples.
+    usage is set only on the final 'result' event.
     """
     cmd = [
         CLAUDE_BIN,
@@ -74,11 +87,12 @@ async def stream_response(
             if full_text and full_text != seen_text:
                 delta = full_text[len(seen_text):]
                 seen_text = full_text
-                yield delta, None
+                yield delta, None, None
 
         elif event_type == "result":
             result_session_id = event.get("session_id")
-            yield "", result_session_id  # signal completion with session_id
+            usage = event.get("usage", {})
+            yield "", result_session_id, usage  # signal completion
 
     await proc.wait()
 
@@ -113,10 +127,15 @@ async def run(
 
     try:
         data = json.loads(stdout.decode("utf-8", errors="replace"))
+        usage = data.get("usage", {})
         return ClaudeResult(
             text=data.get("result", ""),
             session_id=data.get("session_id", ""),
             cost_usd=data.get("total_cost_usd", 0.0),
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
         )
     except (json.JSONDecodeError, AttributeError):
         return ClaudeResult(

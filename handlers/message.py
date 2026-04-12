@@ -62,13 +62,15 @@ async def _run_claude_streaming(
     buffer = ""
     last_edit = 0.0
     new_session_id: str | None = None
+    final_usage: dict = {}
 
     try:
-        async for delta, result_sid in claude.stream_response(
+        async for delta, result_sid, usage in claude.stream_response(
             prompt, session_id, system_prompt, work_dir
         ):
             if result_sid:
                 new_session_id = result_sid
+                final_usage = usage or {}
                 break
             buffer += delta
             now = time.monotonic()
@@ -96,6 +98,15 @@ async def _run_claude_streaming(
         await status_msg.edit_text(f"❌ 오류: {e}")
         return
 
-    # 세션 저장
+    # 세션 저장 + stats 누적
     if new_session_id:
         session_store.save_session(chat_id, new_session_id)
+        session_store.update_session_stats(
+            chat_id,
+            new_session_id,
+            cost_usd=final_usage.get("cost_usd", 0.0),
+            input_tokens=final_usage.get("input_tokens", 0),
+            output_tokens=final_usage.get("output_tokens", 0),
+            cache_read_tokens=final_usage.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=final_usage.get("cache_creation_input_tokens", 0),
+        )

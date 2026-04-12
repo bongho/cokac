@@ -29,6 +29,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "`/delegate <세션이름> <작업>` — 작업 위임\n"
         "`/config set <키> <값>` — 채팅별 설정\n"
         "`/config list` — 현재 설정 보기\n"
+        "`/usage` — 작업 디렉토리 · 토큰 · 비용 현황\n"
         "`!<명령>` — 셸 명령 실행",
         parse_mode="Markdown",
     )
@@ -203,6 +204,14 @@ async def _scheduled_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     result = await claude.run(prompt, session_id)
     if result.session_id:
         session_store.save_session(chat_id, result.session_id)
+        session_store.update_session_stats(
+            chat_id, result.session_id,
+            cost_usd=result.cost_usd,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_read_tokens=result.cache_read_tokens,
+            cache_creation_tokens=result.cache_creation_tokens,
+        )
     text = result.text or "(응답 없음)"
     await context.bot.send_message(chat_id, text[:4000])
 
@@ -266,6 +275,62 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     await update.message.reply_text("사용법: `/config set|list`", parse_mode="Markdown")
+
+
+# ──────────────────────────────────────────────
+# /usage
+# ──────────────────────────────────────────────
+async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import os
+    chat_id = update.effective_chat.id
+    cfg = config_store.get_config(chat_id)
+
+    # 현재 세션 정보
+    sessions = session_store.get_sessions(chat_id)
+    latest_id = session_store.get_latest_session_id(chat_id)
+    current = next((s for s in sessions if s["id"] == latest_id), None)
+
+    # 작업 디렉토리
+    work_dir = cfg.get("work_dir") or os.environ.get("WORK_DIR") or os.path.expanduser("~")
+
+    # 현재 세션 stats
+    if current:
+        sess_cost = current.get("total_cost_usd", 0.0)
+        sess_in = current.get("total_input_tokens", 0)
+        sess_out = current.get("total_output_tokens", 0)
+        sess_cache = current.get("total_cache_read_tokens", 0)
+        sess_turns = current.get("turn_count", 0)
+        sess_name = current.get("name", "")
+        sess_id_short = current["id"][:12]
+        session_block = (
+            f"\n📈 *현재 세션* — {sess_name} (`{sess_id_short}...`)\n"
+            f"  요청: {sess_turns}회\n"
+            f"  입력: {sess_in:,} tok\n"
+            f"  출력: {sess_out:,} tok\n"
+            f"  캐시: {sess_cache:,} tok\n"
+            f"  비용: ${sess_cost:.4f}"
+        )
+    else:
+        session_block = "\n_활성 세션 없음_"
+
+    # 전체 합산
+    total = session_store.get_all_stats(chat_id)
+    total_block = (
+        f"\n💰 *전체 합산*\n"
+        f"  세션: {total['session_count']}개\n"
+        f"  요청: {total['turn_count']}회\n"
+        f"  입력: {total['total_input_tokens']:,} tok\n"
+        f"  출력: {total['total_output_tokens']:,} tok\n"
+        f"  비용: ${total['total_cost_usd']:.4f}"
+    )
+
+    text = (
+        "📊 *사용량 현황*\n"
+        f"📁 작업 디렉토리: `{work_dir}`"
+        f"{session_block}"
+        f"{total_block}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 # ──────────────────────────────────────────────
