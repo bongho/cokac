@@ -34,12 +34,14 @@ from handlers.commands import (
     cmd_instruction,
     cmd_new,
     cmd_procs,
+    cmd_reload,
     cmd_resume,
     cmd_schedule,
     cmd_sessions,
     cmd_start,
     cmd_status,
     cmd_usage,
+    cmd_version,
     cmd_wd,
 )
 from handlers.file import handle_file
@@ -185,6 +187,8 @@ def main() -> None:
     app.add_handler(CommandHandler("instruction", _wrap_auth(cmd_instruction)))
     app.add_handler(CommandHandler("allowedtools", _wrap_auth(cmd_allowedtools)))
     app.add_handler(CommandHandler("download", _wrap_auth(cmd_download)))
+    app.add_handler(CommandHandler("reload", _wrap_auth(cmd_reload)))
+    app.add_handler(CommandHandler("version", _wrap_auth(cmd_version)))
     app.add_handler(CommandHandler("usage", _wrap_auth(cmd_usage)))
     app.add_handler(CommandHandler("cancel", _wrap_auth(cmd_cancel)))
     app.add_handler(CommandHandler("status", _wrap_auth(cmd_status)))

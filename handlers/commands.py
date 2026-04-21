@@ -48,7 +48,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "`/schedule add <cron> <프롬프트>` — 스케줄 추가\n"
         "`/schedules` — 스케줄 목록\n"
         "\n*현황*\n"
-        "`/usage` — 작업 디렉토리 · 토큰 · 비용 현황",
+        "`/usage` — 작업 디렉토리 · 토큰 · 비용 현황\n"
+        "`/reload` — git pull + 봇 재시작\n"
+        "`/version` — 버전 · 커밋 · 환경 정보",
         parse_mode="Markdown",
     )
 
@@ -427,6 +429,15 @@ async def cmd_procs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ──────────────────────────────────────────────
 # /wd [path] — 작업 디렉토리 확인/변경
 # ──────────────────────────────────────────────
+
+_WD_BOOKMARKS: list[tuple[str, str]] = [
+    ("🏠 홈", "~"),
+    ("💼 Documents", "~/Documents"),
+    ("🔬 Projects", "~/Documents/01.Projects"),
+    ("🤖 COKAC", "~/.cokac"),
+]
+
+
 async def cmd_wd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     import os
     chat_id = update.effective_chat.id
@@ -434,23 +445,43 @@ async def cmd_wd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not context.args:
         wd = cfg.get("work_dir") or os.environ.get("WORK_DIR") or os.path.expanduser("~")
+        # 즐겨찾기 버튼 생성 (존재하는 경로만)
+        buttons = []
+        for label, path in _WD_BOOKMARKS:
+            expanded = os.path.expanduser(path)
+            if os.path.isdir(expanded):
+                buttons.append(InlineKeyboardButton(label, callback_data=f"wd_set:{expanded}"))
+        rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+        markup = InlineKeyboardMarkup(rows) if rows else None
         await update.message.reply_text(
-            f"📁 현재 작업 디렉토리: `{wd}`\n\n변경: `/wd <경로>`",
+            f"📁 현재: `{wd}`\n\n변경: `/wd <경로>` 또는 아래 버튼",
             parse_mode="Markdown",
+            reply_markup=markup,
         )
         return
 
     new_path = " ".join(context.args)
-    expanded = os.path.expanduser(new_path)
+    await _set_wd(update, chat_id, new_path)
+
+
+async def _set_wd(update_or_query, chat_id: int, path: str) -> None:
+    import os
+    expanded = os.path.realpath(os.path.expanduser(os.path.expandvars(path)))
     if not os.path.isdir(expanded):
-        await update.message.reply_text(f"❌ 존재하지 않는 디렉토리: `{expanded}`", parse_mode="Markdown")
+        text = f"❌ 존재하지 않는 디렉토리: `{expanded}`"
+        if hasattr(update_or_query, "message"):
+            await update_or_query.message.reply_text(text, parse_mode="Markdown")
+        else:
+            await update_or_query.edit_message_text(text, parse_mode="Markdown")
         return
 
     err = config_store.set_config(chat_id, "work_dir", expanded)
-    if err:
-        await update.message.reply_text(f"❌ {err}")
+    text = f"❌ {err}" if err else f"✅ 작업 디렉토리: `{expanded}`"
+    parse_mode = "Markdown"
+    if hasattr(update_or_query, "message"):
+        await update_or_query.message.reply_text(text, parse_mode=parse_mode)
     else:
-        await update.message.reply_text(f"✅ 작업 디렉토리 변경: `{expanded}`", parse_mode="Markdown")
+        await update_or_query.edit_message_text(text, parse_mode=parse_mode)
 
 
 # ──────────────────────────────────────────────
@@ -560,8 +591,106 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except asyncio.TimeoutError:
             await query.edit_message_text(f"⏱ 타임아웃 (60s): `{cmd[:60]}`", parse_mode="Markdown")
 
+    elif data.startswith("wd_set:"):
+        path = data.split(":", 1)[1]
+        await _set_wd(query, chat_id, path)
+
     elif data == "shell_cancel":
         await query.edit_message_text("❌ 취소됨.")
+
+
+# ──────────────────────────────────────────────
+# /reload — git pull + 재시작
+# ──────────────────────────────────────────────
+async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import os
+    import subprocess
+    from pathlib import Path
+
+    repo_dir = str(Path.home() / ".cokac")
+    msg = await update.message.reply_text("🔄 업데이트 확인 중...")
+
+    # git pull
+    try:
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            capture_output=True, text=True, timeout=30, cwd=repo_dir,
+        )
+        pull_out = result.stdout.strip() or result.stderr.strip()
+        changed = "Already up to date" not in pull_out
+    except Exception as e:
+        pull_out = f"git pull 실패: {e}"
+        changed = False
+
+    await msg.edit_text(
+        f"{'✅ 변경사항 반영됨' if changed else 'ℹ️ 이미 최신'}\n```\n{pull_out[:300]}\n```\n🔄 재시작 중...",
+        parse_mode="Markdown",
+    )
+
+    # launchd KeepAlive=true 이므로 exit(0) 하면 자동 재시작
+    context.application.create_task(_do_exit())
+
+
+# ──────────────────────────────────────────────
+# /version — About & 버전 정보
+# ──────────────────────────────────────────────
+async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import os
+    import subprocess
+    from pathlib import Path
+
+    repo_dir = str(Path.home() / ".cokac")
+
+    try:
+        commit = subprocess.run(
+            ["git", "log", "-1", "--format=%h %s (%ad)", "--date=short"],
+            capture_output=True, text=True, timeout=5, cwd=repo_dir,
+        ).stdout.strip()
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5, cwd=repo_dir,
+        ).stdout.strip()
+        remote = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5, cwd=repo_dir,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=5, cwd=repo_dir,
+        ).stdout.strip()
+    except Exception:
+        commit = branch = remote = "(조회 실패)"
+        dirty = ""
+
+    import sys
+    py_ver = sys.version.split()[0]
+
+    claude_bin = os.environ.get("CLAUDE_BIN") or str(Path.home() / ".local/bin/claude")
+    try:
+        claude_ver = subprocess.run(
+            [claude_bin, "--version"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except Exception:
+        claude_ver = "(조회 실패)"
+
+    status_mark = " ⚠️ (미커밋 변경사항 있음)" if dirty else " ✅"
+
+    await update.message.reply_text(
+        "🤖 *COKAC — Claude Code Telegram Bot*\n\n"
+        f"*브랜치*: `{branch}`{status_mark}\n"
+        f"*최신 커밋*: `{commit}`\n"
+        f"*저장소*: {remote}\n\n"
+        f"*Python*: `{py_ver}`\n"
+        f"*Claude CLI*: `{claude_ver}`",
+        parse_mode="Markdown",
+    )
+
+
+async def _do_exit() -> None:
+    await asyncio.sleep(0.8)  # 마지막 메시지 전송 대기
+    import os
+    os._exit(0)
 
 
 # ──────────────────────────────────────────────
