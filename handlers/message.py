@@ -122,6 +122,7 @@ async def _background_claude(
     work_dir: str | None,
     allowed_tools: list[str] | None = None,
     status_msg,
+    agent_name: str | None = None,
 ) -> None:
     """Run Claude in background and send result as a new message when done."""
     start_time = time.monotonic()
@@ -203,10 +204,11 @@ async def _background_claude(
 
     elapsed_total = int(time.monotonic() - start_time)
     parts = _split_long(buffer)
+    header = f"🤖 @{agent_name}\n\n" if agent_name else ""
     try:
-        await status_msg.edit_text(parts[0])
+        await status_msg.edit_text(header + parts[0])
     except Exception:
-        await bot.send_message(chat_id, parts[0])
+        await bot.send_message(chat_id, header + parts[0])
 
     for part in parts[1:]:
         await bot.send_message(chat_id, part)
@@ -214,6 +216,10 @@ async def _background_claude(
     # 세션 저장 + stats 누적
     if new_session_id:
         session_store.save_session(chat_id, new_session_id)
+        # named agent 세션 업데이트
+        if agent_name:
+            import agents_store
+            agents_store.update_agent_session(chat_id, agent_name, new_session_id)
         session_store.update_session_stats(
             chat_id,
             new_session_id,
@@ -269,5 +275,66 @@ async def trigger_claude(
             work_dir=cfg["work_dir"] or None,
             allowed_tools=allowed_tools,
             status_msg=status_msg,
+        ),
+    )
+
+
+async def handle_agent_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Route @agentname messages to the named agent."""
+    import agents_store
+
+    text = (update.message.text or "").strip()
+    chat_id = update.effective_chat.id
+
+    parts = text.split(None, 1)
+    agent_name = parts[0][1:]  # strip leading @
+    prompt = parts[1].strip() if len(parts) > 1 else ""
+
+    if not prompt:
+        await update.message.reply_text(
+            f"사용법: `@{agent_name} <메시지>`", parse_mode="Markdown"
+        )
+        return
+
+    agent = agents_store.get_agent(chat_id, agent_name)
+    if not agent:
+        await update.message.reply_text(
+            f"❌ `@{agent_name}` 에이전트가 없습니다.\n"
+            f"생성: `/agent create {agent_name} <시스템 프롬프트>`",
+            parse_mode="Markdown",
+        )
+        return
+
+    if task_manager.is_running(chat_id):
+        await update.message.reply_text(
+            "⚠️ 이미 작업이 실행 중입니다. `/cancel` 로 취소하거나 완료를 기다려주세요.",
+            parse_mode="Markdown",
+        )
+        return
+
+    cfg = get_config(chat_id)
+    pending_files = pop_pending_files(chat_id, context)
+    if pending_files:
+        file_lines = "\n".join(f"[첨부파일: {p}]" for p in pending_files)
+        prompt = f"{file_lines}\n\n{prompt}"
+
+    allowed_tools: list[str] | None = (
+        [t.strip() for t in agent["allowed_tools"].split(",") if t.strip()]
+        if agent["allowed_tools"] else None
+    )
+
+    status_msg = await update.message.reply_text(f"🤖 @{agent_name} 실행 중...")
+    task_manager.start_task(
+        chat_id,
+        _background_claude(
+            bot=context.bot,
+            chat_id=chat_id,
+            prompt=prompt,
+            session_id=agent["session_id"] or None,
+            system_prompt=agent["system_prompt"] or None,
+            work_dir=cfg["work_dir"] or None,
+            allowed_tools=allowed_tools,
+            status_msg=status_msg,
+            agent_name=agent_name,
         ),
     )

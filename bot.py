@@ -25,6 +25,7 @@ from telegram.ext import (
 
 from handlers.commands import (
     callback_query,
+    cmd_agent,
     cmd_allowedtools,
     cmd_cancel,
     cmd_config,
@@ -45,7 +46,7 @@ from handlers.commands import (
     cmd_wd,
 )
 from handlers.file import handle_file
-from handlers.message import handle_message
+from handlers.message import handle_agent_message, handle_message
 from handlers.shell import handle_shell
 from scheduler import get_schedules, parse_cron
 
@@ -176,6 +177,7 @@ def main() -> None:
 
     # Commands
     app.add_handler(CommandHandler("start", _wrap_auth(cmd_start)))
+    app.add_handler(CommandHandler("agent", _wrap_auth(cmd_agent)))
     app.add_handler(CommandHandler("new", _wrap_auth(cmd_new)))
     app.add_handler(CommandHandler("fork", _wrap_auth(cmd_fork)))
     app.add_handler(CommandHandler("sessions", _wrap_auth(cmd_sessions)))
@@ -197,6 +199,12 @@ def main() -> None:
 
     # Inline button callbacks
     app.add_handler(CallbackQueryHandler(callback_query))
+
+    # @agentname routing (must be before generic text handler)
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^@\w+") & ~filters.COMMAND,
+        _wrap_auth(handle_agent_message),
+    ))
 
     # Shell commands (! prefix — sync; !& prefix — background)
     app.add_handler(MessageHandler(

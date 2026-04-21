@@ -23,7 +23,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🤖 *Claude Code Bot*\n\n"
         "메시지를 보내면 Claude Code가 응답합니다.\n\n"
-        "*세션*\n"
+        "*멀티 에이전트*\n"
+        "`/agent create <이름> <프롬프트>` — 에이전트 생성\n"
+        "`/agent list` — 에이전트 목록\n"
+        "`/agent tools <이름> <툴>` — 허용 툴 설정\n"
+        "`/agent session <이름> clear` — 세션 초기화\n"
+        "`@<이름> <메시지>` — 에이전트에게 직접 요청\n"
+        "\n*세션*\n"
         "`/new [이름]` — 새 세션 시작\n"
         "`/fork [이름]` — 현재 세션 분기 (새 브랜치)\n"
         "`/resume [id]` — 세션 이어받기\n"
@@ -684,6 +690,145 @@ async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"*Python*: `{py_ver}`\n"
         f"*Claude CLI*: `{claude_ver}`",
         parse_mode="Markdown",
+    )
+
+
+# ──────────────────────────────────────────────
+# /agent — named agent 관리
+# ──────────────────────────────────────────────
+async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import agents_store
+    chat_id = update.effective_chat.id
+    args = context.args or []
+
+    sub = args[0] if args else "list"
+
+    # ── list ──
+    if sub == "list":
+        agents = agents_store.list_agents(chat_id)
+        if not agents:
+            await update.message.reply_text(
+                "등록된 에이전트가 없습니다.\n\n"
+                "생성: `/agent create <이름> <시스템 프롬프트>`\n"
+                "예: `/agent create research 웹 검색과 문서 분석 전문 에이전트`",
+                parse_mode="Markdown",
+            )
+            return
+        lines = []
+        for a in agents:
+            tools = a["allowed_tools"] or "전체"
+            indicator = "🟢" if a["session_id"] else "⚪"
+            lines.append(
+                f"{indicator} *@{a['name']}*\n"
+                f"  _{a['system_prompt'][:80]}_\n"
+                f"  🔧 `{tools}`"
+            )
+        await update.message.reply_text(
+            "🤖 *등록된 에이전트*\n\n" + "\n\n".join(lines) +
+            "\n\n🟢=세션 있음  ⚪=새 세션",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── create ──
+    if sub == "create":
+        if len(args) < 3:
+            await update.message.reply_text(
+                "사용법: `/agent create <이름> <시스템 프롬프트>`\n"
+                "예: `/agent create research 정보 수집 전문. 웹 검색·문서 분석에 집중.`",
+                parse_mode="Markdown",
+            )
+            return
+        name = args[1].lstrip("@")
+        if not all(c.isalnum() or c == "_" for c in name):
+            await update.message.reply_text("❌ 이름은 영문/숫자/언더스코어만 사용 가능합니다.")
+            return
+        prompt = " ".join(args[2:])
+        agents_store.create_agent(chat_id, name, prompt)
+        await update.message.reply_text(
+            f"✅ 에이전트 *@{name}* 생성됨\n\n"
+            f"📋 _{prompt[:120]}_\n\n"
+            f"사용: `@{name} <메시지>`\n"
+            f"툴 설정: `/agent tools {name} Read,Grep,WebSearch`",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── del ──
+    if sub == "del":
+        if len(args) < 2:
+            await update.message.reply_text("사용법: `/agent del <이름>`", parse_mode="Markdown")
+            return
+        name = args[1].lstrip("@")
+        if agents_store.delete_agent(chat_id, name):
+            await update.message.reply_text(f"✅ *@{name}* 삭제됨.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"❌ `@{name}` 에이전트를 찾을 수 없습니다.", parse_mode="Markdown")
+        return
+
+    # ── show ──
+    if sub == "show":
+        if len(args) < 2:
+            await update.message.reply_text("사용법: `/agent show <이름>`", parse_mode="Markdown")
+            return
+        name = args[1].lstrip("@")
+        agent = agents_store.get_agent(chat_id, name)
+        if not agent:
+            await update.message.reply_text(f"❌ `@{name}` 에이전트를 찾을 수 없습니다.", parse_mode="Markdown")
+            return
+        tools = agent["allowed_tools"] or "(전체 허용)"
+        sess = agent["session_id"][:12] + "..." if agent["session_id"] else "(없음 — 다음 호출 시 새 세션)"
+        import time as _time
+        dt = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(agent["created_at"]))
+        await update.message.reply_text(
+            f"🤖 *@{agent['name']}*\n\n"
+            f"*시스템 프롬프트:*\n_{agent['system_prompt']}_\n\n"
+            f"*허용 툴:* `{tools}`\n"
+            f"*현재 세션:* `{sess}`\n"
+            f"*생성:* {dt}",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── tools ──
+    if sub == "tools":
+        if len(args) < 3:
+            await update.message.reply_text(
+                "사용법: `/agent tools <이름> <툴목록|all>`\n"
+                "예: `/agent tools research Read,Grep,WebSearch`",
+                parse_mode="Markdown",
+            )
+            return
+        name = args[1].lstrip("@")
+        if not agents_store.get_agent(chat_id, name):
+            await update.message.reply_text(f"❌ `@{name}` 에이전트를 찾을 수 없습니다.", parse_mode="Markdown")
+            return
+        tools_raw = args[2]
+        if tools_raw.lower() == "all":
+            agents_store.update_agent_tools(chat_id, name, "")
+            await update.message.reply_text(f"✅ *@{name}* 툴 제한 해제 (전체 허용).", parse_mode="Markdown")
+        else:
+            agents_store.update_agent_tools(chat_id, name, tools_raw)
+            await update.message.reply_text(f"✅ *@{name}* 허용 툴: `{tools_raw}`", parse_mode="Markdown")
+        return
+
+    # ── session clear ──
+    if sub == "session":
+        if len(args) < 3 or args[2] != "clear":
+            await update.message.reply_text("사용법: `/agent session <이름> clear`", parse_mode="Markdown")
+            return
+        name = args[1].lstrip("@")
+        if agents_store.reset_agent_session(chat_id, name):
+            await update.message.reply_text(
+                f"✅ *@{name}* 세션 초기화됨.\n다음 `@{name}` 호출 시 새 세션으로 시작합니다.",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(f"❌ `@{name}` 에이전트를 찾을 수 없습니다.", parse_mode="Markdown")
+        return
+
+    await update.message.reply_text(
+        "사용법: `/agent create|del|show|tools|session|list`", parse_mode="Markdown"
     )
 
 
