@@ -29,8 +29,10 @@ from handlers.commands import (
     cmd_allowedtools,
     cmd_cancel,
     cmd_config,
+    cmd_debug,
     cmd_delegate,
     cmd_download,
+    cmd_envvars,
     cmd_fork,
     cmd_instruction,
     cmd_new,
@@ -39,11 +41,13 @@ from handlers.commands import (
     cmd_resume,
     cmd_schedule,
     cmd_sessions,
+    cmd_silent,
     cmd_start,
     cmd_status,
     cmd_usage,
     cmd_version,
     cmd_wd,
+    cmd_ws,
 )
 from handlers.file import handle_file
 from handlers.message import handle_agent_message, handle_message
@@ -196,6 +200,10 @@ def main() -> None:
     app.add_handler(CommandHandler("status", _wrap_auth(cmd_status)))
     app.add_handler(CommandHandler("procs", _wrap_auth(cmd_procs)))
     app.add_handler(CommandHandler("wd", _wrap_auth(cmd_wd)))
+    app.add_handler(CommandHandler("silent", _wrap_auth(cmd_silent)))
+    app.add_handler(CommandHandler("debug", _wrap_auth(cmd_debug)))
+    app.add_handler(CommandHandler("envvars", _wrap_auth(cmd_envvars)))
+    app.add_handler(CommandHandler("ws", _wrap_auth(cmd_ws)))
 
     # Inline button callbacks
     app.add_handler(CallbackQueryHandler(callback_query))

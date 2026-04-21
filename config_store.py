@@ -17,6 +17,10 @@ DEFAULTS: dict[str, object] = {
     "allowed_tools": "",       # comma-separated tool allowlist (empty = all)
     "max_upload_mb": 20,       # max file upload size in MB
     "timezone": "Asia/Seoul",  # scheduler timezone
+    "silent": False,           # suppress tool status messages
+    "debug": False,            # show timing + token cost per turn
+    "file_threshold": 3000,    # auto-send as .md file if response > N chars (0 = off)
+    "edit_interval": 1.5,      # streaming edit interval in seconds
 }
 
 

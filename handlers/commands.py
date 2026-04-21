@@ -41,6 +41,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "`/wd [경로]` — 작업 디렉토리 확인/변경\n"
         "`/config set <키> <값>` — 고급 설정\n"
         "`/config list` — 현재 설정 보기\n"
+        "`/silent [on|off]` — 툴 상태 메시지 숨기기\n"
+        "`/debug [on|off]` — 디버그 모드 (타이밍/비용)\n"
+        "`/envvars` — 환경변수 + 설정 현황\n"
+        "\n*워크스페이스*\n"
+        "`/ws create <이름> <경로> [지침]` — 워크스페이스 생성\n"
+        "`/ws switch <이름>` — 워크스페이스 전환\n"
+        "`/ws list` — 워크스페이스 목록\n"
+        "`/ws del <이름>` — 워크스페이스 삭제\n"
         "\n*파일*\n"
         "파일 첨부 — Claude 컨텍스트에 주입\n"
         "`/download <경로>` — 파일을 텔레그램으로 전송\n"
@@ -601,6 +609,10 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         path = data.split(":", 1)[1]
         await _set_wd(query, chat_id, path)
 
+    elif data.startswith("ws_switch:"):
+        name = data.split(":", 1)[1]
+        await _ws_switch(query, chat_id, name)
+
     elif data == "shell_cancel":
         await query.edit_message_text("❌ 취소됨.")
 
@@ -1012,3 +1024,216 @@ async def cmd_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.delete()
     except Exception as e:
         await msg.edit_text(f"❌ 전송 실패: {e}")
+
+
+# ──────────────────────────────────────────────
+# /silent [on|off] — 툴 상태 메시지 토글
+# ──────────────────────────────────────────────
+async def cmd_silent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    args = context.args or []
+
+    if not args:
+        cfg = config_store.get_config(chat_id)
+        state = "ON" if cfg.get("silent") else "OFF"
+        await update.message.reply_text(
+            f"🔇 Silent 모드: *{state}*\n\n"
+            "ON: 툴 실행 상태 메시지를 숨깁니다\n"
+            "OFF: 툴 실행 상태를 실시간으로 표시합니다\n\n"
+            "변경: `/silent on` 또는 `/silent off`",
+            parse_mode="Markdown",
+        )
+        return
+
+    val = args[0].lower()
+    if val in ("on", "true", "1"):
+        config_store.set_config(chat_id, "silent", "true")
+        await update.message.reply_text("🔇 Silent 모드 *ON* — 툴 상태 메시지를 숨깁니다.", parse_mode="Markdown")
+    elif val in ("off", "false", "0"):
+        config_store.set_config(chat_id, "silent", "false")
+        await update.message.reply_text("🔔 Silent 모드 *OFF* — 툴 상태를 실시간으로 표시합니다.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("사용법: `/silent [on|off]`", parse_mode="Markdown")
+
+
+# ──────────────────────────────────────────────
+# /debug [on|off] — 디버그 모드 (타이밍·비용)
+# ──────────────────────────────────────────────
+async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    args = context.args or []
+
+    if not args:
+        cfg = config_store.get_config(chat_id)
+        state = "ON" if cfg.get("debug") else "OFF"
+        await update.message.reply_text(
+            f"🐛 Debug 모드: *{state}*\n\n"
+            "ON: 응답 하단에 타이밍·토큰·비용·툴 요약을 표시합니다\n"
+            "OFF: 클린 출력 (디버그 정보 없음)\n\n"
+            "변경: `/debug on` 또는 `/debug off`",
+            parse_mode="Markdown",
+        )
+        return
+
+    val = args[0].lower()
+    if val in ("on", "true", "1"):
+        config_store.set_config(chat_id, "debug", "true")
+        await update.message.reply_text(
+            "🐛 Debug 모드 *ON*\n응답 하단에 `⏱ 타이밍 | 💰 비용 | 📥📤 토큰 | 🔧 툴 요약`이 표시됩니다.",
+            parse_mode="Markdown",
+        )
+    elif val in ("off", "false", "0"):
+        config_store.set_config(chat_id, "debug", "false")
+        await update.message.reply_text("✅ Debug 모드 *OFF* — 클린 출력으로 전환됩니다.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("사용법: `/debug [on|off]`", parse_mode="Markdown")
+
+
+# ──────────────────────────────────────────────
+# /envvars — 환경변수 + 설정 스냅샷
+# ──────────────────────────────────────────────
+async def cmd_envvars(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import os
+    chat_id = update.effective_chat.id
+    cfg = config_store.get_config(chat_id)
+
+    def _mask(val: str | None) -> str:
+        if not val:
+            return "(미설정)"
+        return val[:6] + "..." if len(val) > 6 else "***"
+
+    env_lines = [
+        f"`TELEGRAM_BOT_TOKEN` = `{_mask(os.environ.get('TELEGRAM_BOT_TOKEN'))}`",
+        f"`ANTHROPIC_API_KEY` = `{_mask(os.environ.get('ANTHROPIC_API_KEY'))}`",
+        f"`OPENAI_API_KEY` = `{_mask(os.environ.get('OPENAI_API_KEY'))}`",
+        f"`CLAUDE_BIN` = `{os.environ.get('CLAUDE_BIN', '(기본값)')}`",
+        f"`WORK_DIR` = `{os.environ.get('WORK_DIR', '(미설정)')}`",
+        f"`ALLOWED_CHAT_IDS` = `{os.environ.get('ALLOWED_CHAT_IDS', '(제한없음)')}`",
+    ]
+
+    cfg_lines = [f"`{k}` = `{v}`" for k, v in cfg.items()]
+
+    await update.message.reply_text(
+        "🌍 *환경변수*\n" + "\n".join(env_lines) +
+        "\n\n⚙️ *현재 설정 (chat-level)*\n" + "\n".join(cfg_lines),
+        parse_mode="Markdown",
+    )
+
+
+# ──────────────────────────────────────────────
+# /ws create|switch|list|del — 워크스페이스 관리
+# ──────────────────────────────────────────────
+async def cmd_ws(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import workspace_store
+    chat_id = update.effective_chat.id
+    args = context.args or []
+
+    sub = args[0] if args else "list"
+
+    # ── list ──
+    if sub == "list":
+        workspaces = workspace_store.list_workspaces(chat_id)
+        if not workspaces:
+            await update.message.reply_text(
+                "저장된 워크스페이스가 없습니다.\n\n"
+                "생성: `/ws create <이름> <경로> [지침]`\n"
+                "예: `/ws create phd ~/Documents/01.Projects/phd-dissertation PhD 연구 환경`",
+                parse_mode="Markdown",
+            )
+            return
+        cfg = config_store.get_config(chat_id)
+        cur_wd = cfg.get("work_dir", "")
+        lines = []
+        buttons = []
+        for w in workspaces:
+            marker = "▶" if w["work_dir"] == cur_wd else " "
+            hint_preview = (f" — _{w['agent_hint'][:40]}_" if w["agent_hint"] else "")
+            lines.append(f"{marker} *{w['name']}* `{w['work_dir']}`{hint_preview}")
+            buttons.append([InlineKeyboardButton(
+                f"{'▶ ' if w['work_dir'] == cur_wd else ''}{w['name']}",
+                callback_data=f"ws_switch:{w['name']}",
+            )])
+        await update.message.reply_text(
+            "🗂 *워크스페이스 목록*\n\n" + "\n".join(lines) +
+            "\n\n▶ = 현재 활성",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
+
+    # ── create ──
+    if sub == "create":
+        if len(args) < 3:
+            await update.message.reply_text(
+                "사용법: `/ws create <이름> <경로> [지침]`\n"
+                "예: `/ws create phd ~/Documents/01.Projects/phd-dissertation PhD 연구 모드`",
+                parse_mode="Markdown",
+            )
+            return
+        import os
+        name = args[1]
+        raw_path = args[2]
+        hint = " ".join(args[3:]) if len(args) > 3 else ""
+        expanded = os.path.realpath(os.path.expanduser(os.path.expandvars(raw_path)))
+        if not os.path.isdir(expanded):
+            await update.message.reply_text(
+                f"❌ 존재하지 않는 디렉토리: `{expanded}`", parse_mode="Markdown"
+            )
+            return
+        workspace_store.save_workspace(chat_id, name, expanded, hint)
+        await update.message.reply_text(
+            f"✅ 워크스페이스 *{name}* 저장됨\n"
+            f"📁 `{expanded}`\n"
+            f"📋 지침: _{hint or '(없음)'}_\n\n"
+            f"전환: `/ws switch {name}`",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── switch ──
+    if sub == "switch":
+        if len(args) < 2:
+            await update.message.reply_text("사용법: `/ws switch <이름>`", parse_mode="Markdown")
+            return
+        name = args[1]
+        await _ws_switch(update, chat_id, name)
+        return
+
+    # ── del ──
+    if sub == "del":
+        if len(args) < 2:
+            await update.message.reply_text("사용법: `/ws del <이름>`", parse_mode="Markdown")
+            return
+        name = args[1]
+        import workspace_store as _ws
+        if _ws.delete_workspace(chat_id, name):
+            await update.message.reply_text(f"✅ 워크스페이스 *{name}* 삭제됨.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"❌ `{name}` 워크스페이스를 찾을 수 없습니다.", parse_mode="Markdown")
+        return
+
+    await update.message.reply_text("사용법: `/ws create|switch|list|del`", parse_mode="Markdown")
+
+
+async def _ws_switch(update_or_query, chat_id: int, name: str) -> None:
+    import workspace_store
+    w = workspace_store.get_workspace(chat_id, name)
+    if not w:
+        text = f"❌ `{name}` 워크스페이스를 찾을 수 없습니다."
+        if hasattr(update_or_query, "message"):
+            await update_or_query.message.reply_text(text, parse_mode="Markdown")
+        else:
+            await update_or_query.edit_message_text(text, parse_mode="Markdown")
+        return
+    config_store.set_config(chat_id, "work_dir", w["work_dir"])
+    if w["agent_hint"]:
+        config_store.set_config(chat_id, "agent_hint", w["agent_hint"])
+    text = (
+        f"✅ 워크스페이스 *{name}* 활성화\n"
+        f"📁 `{w['work_dir']}`\n"
+        f"📋 지침: _{w['agent_hint'] or '(없음)'}_"
+    )
+    if hasattr(update_or_query, "message"):
+        await update_or_query.message.reply_text(text, parse_mode="Markdown")
+    else:
+        await update_or_query.edit_message_text(text, parse_mode="Markdown")

@@ -127,6 +127,11 @@ async def _background_claude(
     """Run Claude in background and send result as a new message when done."""
     start_time = time.monotonic()
     backend = get_backend(chat_id)
+    cfg = get_config(chat_id)
+    silent: bool = bool(cfg.get("silent", False))
+    debug: bool = bool(cfg.get("debug", False))
+    file_threshold: int = int(cfg.get("file_threshold") or 3000)
+    edit_interval: float = float(cfg.get("edit_interval") or EDIT_INTERVAL)
 
     stop_typing = asyncio.Event()
     stop_heartbeat = asyncio.Event()
@@ -138,6 +143,7 @@ async def _background_claude(
     first_token = True
     new_session_id: str | None = None
     final_usage: dict = {}
+    tool_timings: list[tuple[str, float]] = []  # (tool_name, elapsed_at)
 
     try:
         async for delta, result_sid, usage in backend.stream(
@@ -150,14 +156,19 @@ async def _background_claude(
 
             if delta.startswith("__STATUS__:"):
                 tool_name = delta.split(":", 1)[1]
-                label = TOOL_LABELS.get(tool_name, f"🔧 {tool_name} 실행 중...")
-                stop_heartbeat.set()
-                heartbeat_task.cancel()
-                try:
-                    await status_msg.edit_text(label)
-                    last_edit = time.monotonic()
-                except Exception:
-                    pass
+                elapsed_now = time.monotonic() - start_time
+                tool_timings.append((tool_name, elapsed_now))
+                if not silent:
+                    label = TOOL_LABELS.get(tool_name, f"🔧 {tool_name} 실행 중...")
+                    if debug:
+                        label += f" _{elapsed_now:.1f}s_"
+                    stop_heartbeat.set()
+                    heartbeat_task.cancel()
+                    try:
+                        await status_msg.edit_text(label)
+                        last_edit = time.monotonic()
+                    except Exception:
+                        pass
                 continue
 
             buffer += delta
@@ -165,14 +176,15 @@ async def _background_claude(
                 first_token = False
                 stop_heartbeat.set()
                 heartbeat_task.cancel()
-                try:
-                    await status_msg.edit_text("💭 생성 중...")
-                    last_edit = time.monotonic()
-                except Exception:
-                    pass
+                if not silent:
+                    try:
+                        await status_msg.edit_text("💭 생성 중...")
+                        last_edit = time.monotonic()
+                    except Exception:
+                        pass
 
             now = time.monotonic()
-            if buffer and (now - last_edit) >= EDIT_INTERVAL:
+            if buffer and (now - last_edit) >= edit_interval:
                 elapsed = int(now - start_time)
                 try:
                     await status_msg.edit_text(buffer[:MAX_MSG_LEN] + f"\n\n▌ _{elapsed}s_")
@@ -202,16 +214,58 @@ async def _background_claude(
     if not buffer:
         buffer = "(응답 없음)"
 
-    elapsed_total = int(time.monotonic() - start_time)
-    parts = _split_long(buffer)
+    elapsed_total = time.monotonic() - start_time
     header = f"🤖 @{agent_name}\n\n" if agent_name else ""
-    try:
-        await status_msg.edit_text(header + parts[0])
-    except Exception:
-        await bot.send_message(chat_id, header + parts[0])
 
-    for part in parts[1:]:
-        await bot.send_message(chat_id, part)
+    # debug footer: timing + cost
+    debug_footer = ""
+    if debug:
+        cost = final_usage.get("cost_usd", 0.0)
+        in_tok = final_usage.get("input_tokens", 0)
+        out_tok = final_usage.get("output_tokens", 0)
+        tool_summary = " · ".join(f"{n}({t:.1f}s)" for n, t in tool_timings) or "없음"
+        debug_footer = (
+            f"\n\n---\n⏱ {elapsed_total:.1f}s"
+            f" | 💰 ${cost:.4f}"
+            f" | 📥{in_tok} 📤{out_tok}"
+            f"\n🔧 {tool_summary}"
+        )
+
+    full_response = header + buffer + debug_footer
+
+    # 응답이 threshold 초과 → .md 파일로 전송
+    if file_threshold > 0 and len(full_response) > file_threshold:
+        import os, tempfile
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(full_response)
+            tmp_path = f.name
+        try:
+            caption = f"⏱ {elapsed_total:.1f}s · {len(buffer):,}자"
+            if agent_name:
+                caption = f"🤖 @{agent_name} · " + caption
+            await status_msg.edit_text("📄 응답이 길어 파일로 전송합니다...")
+            with open(tmp_path, "rb") as f:
+                await bot.send_document(
+                    chat_id,
+                    document=f,
+                    filename="response.md",
+                    caption=caption,
+                )
+            await status_msg.delete()
+        except Exception as e:
+            await status_msg.edit_text(f"❌ 파일 전송 실패: {e}")
+        finally:
+            os.unlink(tmp_path)
+    else:
+        parts = _split_long(full_response)
+        try:
+            await status_msg.edit_text(parts[0])
+        except Exception:
+            await bot.send_message(chat_id, parts[0])
+        for part in parts[1:]:
+            await bot.send_message(chat_id, part)
 
     # 세션 저장 + stats 누적
     if new_session_id:
