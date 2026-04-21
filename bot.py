@@ -28,6 +28,7 @@ from handlers.commands import (
     cmd_agent,
     cmd_allowedtools,
     cmd_cancel,
+    cmd_clear,
     cmd_config,
     cmd_debug,
     cmd_delegate,
@@ -197,6 +198,7 @@ def main() -> None:
     app.add_handler(CommandHandler("version", _wrap_auth(cmd_version)))
     app.add_handler(CommandHandler("usage", _wrap_auth(cmd_usage)))
     app.add_handler(CommandHandler("cancel", _wrap_auth(cmd_cancel)))
+    app.add_handler(CommandHandler("clear", _wrap_auth(cmd_clear)))
     app.add_handler(CommandHandler("status", _wrap_auth(cmd_status)))
     app.add_handler(CommandHandler("procs", _wrap_auth(cmd_procs)))
     app.add_handler(CommandHandler("wd", _wrap_auth(cmd_wd)))

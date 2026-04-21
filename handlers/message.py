@@ -83,7 +83,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         prompt = text
 
     session_id: str | None = None
-    if cfg["auto_resume"]:
+    if cfg.get("pending_new_session"):
+        config_store.set_config(chat_id, "pending_new_session", "false")
+    elif cfg["auto_resume"]:
         session_id = session_store.get_latest_session_id(chat_id)
 
     system_prompt: str | None = cfg["agent_hint"] or None

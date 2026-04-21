@@ -21,6 +21,7 @@ DEFAULTS: dict[str, object] = {
     "debug": False,            # show timing + token cost per turn
     "file_threshold": 3000,    # auto-send as .md file if response > N chars (0 = off)
     "edit_interval": 1.5,      # streaming edit interval in seconds
+    "pending_new_session": False,  # one-shot flag: force fresh session on next message
 }
 
 

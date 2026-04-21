@@ -30,6 +30,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "`/agent session <이름> clear` — 세션 초기화\n"
         "`@<이름> <메시지>` — 에이전트에게 직접 요청\n"
         "\n*세션*\n"
+        "`/clear` — 다음 메시지를 새 세션으로 시작\n"
         "`/new [이름]` — 새 세션 시작\n"
         "`/fork [이름]` — 현재 세션 분기 (새 브랜치)\n"
         "`/resume [id]` — 세션 이어받기\n"
@@ -496,6 +497,23 @@ async def _set_wd(update_or_query, chat_id: int, path: str) -> None:
         await update_or_query.message.reply_text(text, parse_mode=parse_mode)
     else:
         await update_or_query.edit_message_text(text, parse_mode=parse_mode)
+
+
+# ──────────────────────────────────────────────
+# /clear — 다음 메시지를 새 세션으로 시작
+# ──────────────────────────────────────────────
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    config_store.set_config(chat_id, "pending_new_session", "true")
+    latest = session_store.get_latest_session_id(chat_id)
+    prev = f"`{latest[:12]}...`" if latest else "(없음)"
+    await update.message.reply_text(
+        f"🧹 컨텍스트 초기화됨\n\n"
+        f"이전 세션: {prev}\n"
+        f"다음 메시지부터 새 Claude 세션으로 시작합니다.\n\n"
+        f"_기존 세션은 `/sessions`에서 계속 확인할 수 있습니다._",
+        parse_mode="Markdown",
+    )
 
 
 # ──────────────────────────────────────────────
