@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import subprocess
 import time
 
 import config_store
 import scheduler as sched_store
 import session as session_store
+import task_manager
 from backend_factory import get_backend
 from scheduler import parse_cron
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -20,17 +23,32 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🤖 *Claude Code Bot*\n\n"
         "메시지를 보내면 Claude Code가 응답합니다.\n\n"
-        "*커맨드*\n"
+        "*세션*\n"
         "`/new [이름]` — 새 세션 시작\n"
+        "`/fork [이름]` — 현재 세션 분기 (새 브랜치)\n"
         "`/resume [id]` — 세션 이어받기\n"
-        "`/sessions` — 세션 목록\n"
+        "`/sessions` — 세션 목록 (🗑 버튼으로 삭제)\n"
+        "`/delegate <세션이름> <작업>` — 작업 위임\n"
+        "\n*설정*\n"
+        "`/instruction [텍스트|clear]` — 커스텀 지침 설정\n"
+        "`/allowedtools [툴목록|all]` — 허용 툴 설정\n"
+        "`/wd [경로]` — 작업 디렉토리 확인/변경\n"
+        "`/config set <키> <값>` — 고급 설정\n"
+        "`/config list` — 현재 설정 보기\n"
+        "\n*파일*\n"
+        "파일 첨부 — Claude 컨텍스트에 주입\n"
+        "`/download <경로>` — 파일을 텔레그램으로 전송\n"
+        "\n*실행*\n"
+        "`!<명령>` — 셸 명령 실행 (동기, 60s)\n"
+        "`!&<명령>` — 백그라운드 실행 (완료 시 알림)\n"
+        "`/status` — 현재 작업 실행 상태 확인\n"
+        "`/cancel` — 실행 중인 작업 취소\n"
+        "`/procs` — 로컬 Claude 터미널 세션 목록\n"
+        "\n*스케줄*\n"
         "`/schedule add <cron> <프롬프트>` — 스케줄 추가\n"
         "`/schedules` — 스케줄 목록\n"
-        "`/delegate <세션이름> <작업>` — 작업 위임\n"
-        "`/config set <키> <값>` — 채팅별 설정\n"
-        "`/config list` — 현재 설정 보기\n"
-        "`/usage` — 작업 디렉토리 · 토큰 · 비용 현황\n"
-        "`!<명령>` — 셸 명령 실행",
+        "\n*현황*\n"
+        "`/usage` — 작업 디렉토리 · 토큰 · 비용 현황",
         parse_mode="Markdown",
     )
 
@@ -82,10 +100,13 @@ async def cmd_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         marker = "▶" if s["id"] == latest_id else " "
         dt = time.strftime("%m/%d %H:%M", time.localtime(s["created_at"]))
         lines.append(f"{marker} `{s['id'][:12]}` {s['name']} ({dt})")
-        buttons.append([InlineKeyboardButton(
-            f"{'▶ ' if s['id'] == latest_id else ''}{s['name']} ({s['id'][:8]})",
-            callback_data=f"resume:{s['id']}",
-        )])
+        buttons.append([
+            InlineKeyboardButton(
+                f"{'▶ ' if s['id'] == latest_id else ''}{s['name']} ({s['id'][:8]})",
+                callback_data=f"resume:{s['id']}",
+            ),
+            InlineKeyboardButton("🗑", callback_data=f"session_del:{s['id']}"),
+        ])
 
     await update.message.reply_text(
         "📋 *세션 목록*\n" + "\n".join(lines),
@@ -136,8 +157,9 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
         cron = " ".join(rest[:5])
         prompt = " ".join(rest[5:])
+        tz = config_store.get_config(chat_id).get("timezone") or "Asia/Seoul"
         try:
-            cron_kwargs = parse_cron(cron)
+            cron_kwargs = parse_cron(cron, tz)
         except ValueError as e:
             await update.message.reply_text(f"❌ {e}")
             return
@@ -335,6 +357,126 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ──────────────────────────────────────────────
+# /procs — 로컬 실행 중인 Claude 터미널 세션
+# ──────────────────────────────────────────────
+def _get_local_claude_procs() -> list[dict]:
+    """Return list of {pid, session_id, cwd} for running claude --session-id processes."""
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid,args"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return []
+
+    procs = []
+    for line in result.stdout.splitlines():
+        if "--session-id" not in line:
+            continue
+        m = re.search(r"claude\b", line)
+        if not m:
+            continue
+        pid_m = re.match(r"\s*(\d+)\s+", line)
+        sid_m = re.search(r"--session-id\s+([0-9a-f-]{36})", line)
+        if not pid_m or not sid_m:
+            continue
+        pid = pid_m.group(1)
+        session_id = sid_m.group(1)
+        try:
+            cwd_result = subprocess.run(
+                ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+                capture_output=True, text=True, timeout=3,
+            )
+            cwd = next(
+                (l[1:] for l in cwd_result.stdout.splitlines() if l.startswith("n")),
+                "?",
+            )
+        except Exception:
+            cwd = "?"
+        procs.append({"pid": pid, "session_id": session_id, "cwd": cwd})
+    return procs
+
+
+async def cmd_procs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List locally running Claude terminal sessions with resume buttons."""
+    chat_id = update.effective_chat.id
+    procs = await asyncio.get_event_loop().run_in_executor(None, _get_local_claude_procs)
+
+    if not procs:
+        await update.message.reply_text("실행 중인 로컬 Claude 세션이 없습니다.")
+        return
+
+    lines = []
+    buttons = []
+    for p in procs:
+        sid_short = p["session_id"][:12]
+        cwd_short = p["cwd"].replace("/Users/bono", "~")
+        lines.append(f"• PID `{p['pid']}` — `{sid_short}...`\n  📁 `{cwd_short}`")
+        buttons.append([InlineKeyboardButton(
+            f"▶ Resume {sid_short}",
+            callback_data=f"resume:{p['session_id']}",
+        )])
+
+    await update.message.reply_text(
+        "🖥 *로컬 Claude 세션*\n\n" + "\n\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+# ──────────────────────────────────────────────
+# /wd [path] — 작업 디렉토리 확인/변경
+# ──────────────────────────────────────────────
+async def cmd_wd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import os
+    chat_id = update.effective_chat.id
+    cfg = config_store.get_config(chat_id)
+
+    if not context.args:
+        wd = cfg.get("work_dir") or os.environ.get("WORK_DIR") or os.path.expanduser("~")
+        await update.message.reply_text(
+            f"📁 현재 작업 디렉토리: `{wd}`\n\n변경: `/wd <경로>`",
+            parse_mode="Markdown",
+        )
+        return
+
+    new_path = " ".join(context.args)
+    expanded = os.path.expanduser(new_path)
+    if not os.path.isdir(expanded):
+        await update.message.reply_text(f"❌ 존재하지 않는 디렉토리: `{expanded}`", parse_mode="Markdown")
+        return
+
+    err = config_store.set_config(chat_id, "work_dir", expanded)
+    if err:
+        await update.message.reply_text(f"❌ {err}")
+    else:
+        await update.message.reply_text(f"✅ 작업 디렉토리 변경: `{expanded}`", parse_mode="Markdown")
+
+
+# ──────────────────────────────────────────────
+# /cancel
+# ──────────────────────────────────────────────
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if task_manager.cancel_task(chat_id):
+        await update.message.reply_text("🛑 작업을 취소했습니다.")
+    else:
+        await update.message.reply_text("실행 중인 작업이 없습니다.")
+
+
+# ──────────────────────────────────────────────
+# /status
+# ──────────────────────────────────────────────
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    elapsed = task_manager.elapsed_seconds(chat_id)
+    if elapsed is not None:
+        await update.message.reply_text(f"⚙️ 작업 실행 중 — 경과 {int(elapsed)}초")
+    else:
+        await update.message.reply_text("✅ 실행 중인 작업 없음")
+
+
+# ──────────────────────────────────────────────
 # Callback query handler (인라인 버튼)
 # ──────────────────────────────────────────────
 async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -347,6 +489,37 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         session_id = data.split(":", 1)[1]
         session_store.set_active_session(chat_id, session_id)
         await query.edit_message_text(f"✅ 세션 `{session_id[:12]}...` 활성화됨.", parse_mode="Markdown")
+
+    elif data.startswith("session_del:"):
+        session_id = data.split(":", 1)[1]
+        if session_store.delete_session(chat_id, session_id):
+            await query.answer(f"세션 {session_id[:8]} 삭제됨.")
+            # 목록 갱신
+            sessions = session_store.get_sessions(chat_id)
+            if not sessions:
+                await query.edit_message_text("세션이 없습니다. `/new`로 시작하세요.", parse_mode="Markdown")
+            else:
+                latest_id = session_store.get_latest_session_id(chat_id)
+                lines = []
+                buttons = []
+                for s in reversed(sessions):
+                    marker = "▶" if s["id"] == latest_id else " "
+                    dt = time.strftime("%m/%d %H:%M", time.localtime(s["created_at"]))
+                    lines.append(f"{marker} `{s['id'][:12]}` {s['name']} ({dt})")
+                    buttons.append([
+                        InlineKeyboardButton(
+                            f"{'▶ ' if s['id'] == latest_id else ''}{s['name']} ({s['id'][:8]})",
+                            callback_data=f"resume:{s['id']}",
+                        ),
+                        InlineKeyboardButton("🗑", callback_data=f"session_del:{s['id']}"),
+                    ])
+                await query.edit_message_text(
+                    "📋 *세션 목록*\n" + "\n".join(lines),
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
+        else:
+            await query.answer("세션을 찾을 수 없습니다.")
 
     elif data.startswith("sched_del:"):
         sched_id = data.split(":", 1)[1]
@@ -389,3 +562,179 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     elif data == "shell_cancel":
         await query.edit_message_text("❌ 취소됨.")
+
+
+# ──────────────────────────────────────────────
+# /fork [이름] — 현재 세션 분기
+# ──────────────────────────────────────────────
+async def cmd_fork(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    session_id = session_store.get_latest_session_id(chat_id)
+    if not session_id:
+        await update.message.reply_text(
+            "⚠️ 활성 세션이 없습니다. `/new`로 먼저 세션을 시작하세요.", parse_mode="Markdown"
+        )
+        return
+
+    name = " ".join(context.args) if context.args else ""
+    cfg = config_store.get_config(chat_id)
+
+    msg = await update.message.reply_text("🌿 세션 분기 중...")
+    result = await get_backend(chat_id).run(
+        chat_id,
+        "세션이 분기됩니다. 준비 완료를 한 줄로 알려주세요.",
+        session_id=session_id,
+        system_prompt=cfg["agent_hint"] or None,
+        work_dir=cfg["work_dir"] or None,
+        fork=True,
+    )
+    if result.session_id and result.session_id != session_id:
+        fork_name = name or f"fork-{result.session_id[:6]}"
+        session_store.save_session(chat_id, result.session_id, fork_name)
+        session_store.set_active_session(chat_id, result.session_id)
+        await msg.edit_text(
+            f"🌿 *세션 분기 완료*\n"
+            f"원본: `{session_id[:12]}...`\n"
+            f"새 세션: `{result.session_id[:12]}...` ({fork_name})\n"
+            f"이제 새 세션에서 작업합니다.",
+            parse_mode="Markdown",
+        )
+    else:
+        await msg.edit_text(
+            f"⚠️ 분기된 세션 ID를 확인할 수 없습니다.\n응답: {result.text[:200]}"
+        )
+
+
+# ──────────────────────────────────────────────
+# /instruction [text|clear]
+# ──────────────────────────────────────────────
+async def cmd_instruction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    args = context.args or []
+
+    if not args:
+        cfg = config_store.get_config(chat_id)
+        hint = cfg.get("agent_hint") or "(없음)"
+        await update.message.reply_text(
+            f"📋 *현재 커스텀 지침*\n{hint}\n\n"
+            "변경: `/instruction <텍스트>`\n초기화: `/instruction clear`",
+            parse_mode="Markdown",
+        )
+        return
+
+    if args[0] == "clear":
+        config_store.set_config(chat_id, "agent_hint", "")
+        await update.message.reply_text("✅ 커스텀 지침 초기화됨.", parse_mode="Markdown")
+        return
+
+    text = " ".join(args)
+    err = config_store.set_config(chat_id, "agent_hint", text)
+    if err:
+        await update.message.reply_text(f"❌ {err}")
+    else:
+        await update.message.reply_text(
+            f"✅ 커스텀 지침 저장됨:\n_{text[:200]}_", parse_mode="Markdown"
+        )
+
+
+# ──────────────────────────────────────────────
+# /allowedtools [툴목록|all]
+# ──────────────────────────────────────────────
+
+_KNOWN_TOOLS = {
+    "Bash", "Read", "Write", "Edit", "Glob", "Grep",
+    "WebFetch", "WebSearch", "Agent", "TodoWrite",
+}
+
+
+async def cmd_allowedtools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    args = context.args or []
+
+    if not args:
+        cfg = config_store.get_config(chat_id)
+        current = cfg.get("allowed_tools") or "(제한 없음 — 모든 툴 허용)"
+        await update.message.reply_text(
+            f"🔧 *현재 허용 툴*\n`{current}`\n\n"
+            "변경: `/allowedtools Read,Grep,Glob`\n"
+            "전체 허용: `/allowedtools all`\n"
+            f"사용 가능 툴: `{', '.join(sorted(_KNOWN_TOOLS))}`",
+            parse_mode="Markdown",
+        )
+        return
+
+    if args[0].lower() == "all":
+        config_store.set_config(chat_id, "allowed_tools", "")
+        await update.message.reply_text("✅ 툴 제한 해제 — 모든 툴 허용.", parse_mode="Markdown")
+        return
+
+    raw = " ".join(args)
+    tools = [t.strip() for t in raw.replace(",", " ").split() if t.strip()]
+    unknown = [t for t in tools if t not in _KNOWN_TOOLS]
+    if unknown:
+        await update.message.reply_text(
+            f"⚠️ 알 수 없는 툴: `{', '.join(unknown)}`\n"
+            f"사용 가능: `{', '.join(sorted(_KNOWN_TOOLS))}`",
+            parse_mode="Markdown",
+        )
+        return
+
+    value = ",".join(tools)
+    err = config_store.set_config(chat_id, "allowed_tools", value)
+    if err:
+        await update.message.reply_text(f"❌ {err}")
+    else:
+        await update.message.reply_text(
+            f"✅ 허용 툴 설정됨: `{value}`", parse_mode="Markdown"
+        )
+
+
+# ──────────────────────────────────────────────
+# /download <경로>
+# ──────────────────────────────────────────────
+
+_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50MB (Telegram 제한)
+
+
+async def cmd_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import os
+    chat_id = update.effective_chat.id
+
+    if not context.args:
+        await update.message.reply_text(
+            "사용법: `/download <파일경로>`\n예: `/download ~/project/result.csv`",
+            parse_mode="Markdown",
+        )
+        return
+
+    raw_path = " ".join(context.args)
+    path = os.path.realpath(os.path.expanduser(os.path.expandvars(raw_path)))
+
+    if not os.path.exists(path):
+        await update.message.reply_text(f"❌ 파일을 찾을 수 없습니다: `{path}`", parse_mode="Markdown")
+        return
+
+    if not os.path.isfile(path):
+        await update.message.reply_text(f"❌ 디렉토리는 전송할 수 없습니다: `{path}`", parse_mode="Markdown")
+        return
+
+    size = os.path.getsize(path)
+    if size > _MAX_DOWNLOAD_BYTES:
+        mb = size / 1024 / 1024
+        await update.message.reply_text(
+            f"❌ 파일이 너무 큽니다: {mb:.1f}MB (최대 50MB)", parse_mode="Markdown"
+        )
+        return
+
+    msg = await update.message.reply_text(f"📤 전송 중: `{os.path.basename(path)}`", parse_mode="Markdown")
+    try:
+        with open(path, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=os.path.basename(path),
+                caption=f"`{path}`",
+                parse_mode="Markdown",
+            )
+        await msg.delete()
+    except Exception as e:
+        await msg.edit_text(f"❌ 전송 실패: {e}")

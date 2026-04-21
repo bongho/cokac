@@ -14,15 +14,32 @@ MAX_OUTPUT = 3800  # Telegram 메시지 최대 길이 여유
 async def handle_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     text = update.message.text or ""
+
+    # !& prefix → 백그라운드 실행
+    if text.startswith("!&"):
+        cmd = text[2:].strip()
+        if not cmd:
+            await update.message.reply_text(
+                "사용법: `!&<명령어>` (백그라운드 실행, 완료 시 알림)\n예: `!&npm test`",
+                parse_mode="Markdown",
+            )
+            return
+        cfg = get_config(chat_id)
+        work_dir = cfg.get("work_dir") or os.path.expanduser("~")
+        await _execute_shell_bg(update, context, cmd, work_dir)
+        return
+
     cmd = text[1:].strip()  # remove leading '!'
 
     if not cmd:
-        await update.message.reply_text("사용법: `!<명령어>` (예: `!git status`)", parse_mode="Markdown")
+        await update.message.reply_text(
+            "사용법: `!<명령어>` — 동기 실행\n`!&<명령어>` — 백그라운드 실행 (완료 시 알림)",
+            parse_mode="Markdown",
+        )
         return
 
     cfg = get_config(chat_id)
     if cfg["shell_confirm"]:
-        # 확인 버튼 (InlineKeyboard)
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ 실행", callback_data=f"shell_exec:{cmd}"),
@@ -35,6 +52,48 @@ async def handle_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     await _execute_shell(update, cmd, cfg.get("work_dir") or os.path.expanduser("~"))
+
+
+async def _execute_shell_bg(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    cmd: str,
+    work_dir: str,
+) -> None:
+    """Run cmd in background; notify when done."""
+    chat_id = update.effective_chat.id
+    ack = await update.message.reply_text(
+        f"🔄 백그라운드 실행 시작: `{cmd[:60]}`", parse_mode="Markdown"
+    )
+
+    async def _bg() -> None:
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=work_dir,
+            )
+            stdout, _ = await proc.communicate()
+            output = stdout.decode("utf-8", errors="replace").strip() or "(출력 없음)"
+            if len(output) > MAX_OUTPUT:
+                output = output[:MAX_OUTPUT] + "\n...(출력 잘림)"
+            rc = proc.returncode
+            status = "✅" if rc == 0 else f"❌ (rc={rc})"
+            await context.bot.send_message(
+                chat_id,
+                f"{status} 완료: `{cmd[:60]}`\n```\n{output}\n```",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            await context.bot.send_message(chat_id, f"❌ 백그라운드 오류: {e}")
+        finally:
+            try:
+                await ack.delete()
+            except Exception:
+                pass
+
+    asyncio.get_event_loop().create_task(_bg())
 
 
 async def _execute_shell(update: Update, cmd: str, work_dir: str) -> None:

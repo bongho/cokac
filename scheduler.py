@@ -73,7 +73,7 @@ def delete_schedule(schedule_id: str) -> bool:
     return True
 
 
-def parse_cron(cron_str: str) -> dict:
+def parse_cron(cron_str: str, timezone: str = "Asia/Seoul") -> dict:
     """Convert '0 9 * * *' → APScheduler CronTrigger kwargs."""
     parts = cron_str.strip().split()
     if len(parts) != 5:
@@ -85,4 +85,5 @@ def parse_cron(cron_str: str) -> dict:
         "day": day,
         "month": month,
         "day_of_week": day_of_week,
+        "timezone": timezone,
     }

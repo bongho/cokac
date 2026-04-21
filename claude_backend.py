@@ -17,9 +17,11 @@ class ClaudeCodeBackend:
         session_id: str | None,
         system_prompt: str | None,
         work_dir: str | None,
+        allowed_tools: list[str] | None = None,
+        fork: bool = False,
     ) -> AsyncGenerator[tuple[str, str | None, dict | None], None]:
         async for delta, sid, usage in _claude.stream_response(
-            prompt, session_id, system_prompt, work_dir
+            prompt, session_id, system_prompt, work_dir, allowed_tools, fork
         ):
             yield delta, sid, usage
 
@@ -30,8 +32,10 @@ class ClaudeCodeBackend:
         session_id: str | None,
         system_prompt: str | None,
         work_dir: str | None,
+        allowed_tools: list[str] | None = None,
+        fork: bool = False,
     ) -> BackendResult:
-        r = await _claude.run(prompt, session_id, system_prompt, work_dir)
+        r = await _claude.run(prompt, session_id, system_prompt, work_dir, allowed_tools, fork)
         return BackendResult(
             text=r.text,
             session_id=r.session_id,

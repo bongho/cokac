@@ -14,6 +14,9 @@ DEFAULTS: dict[str, object] = {
     "backend": "claude",       # backend: claude | openai | anthropic
     "openai_model": "gpt-4o",
     "anthropic_model": "claude-opus-4-6",
+    "allowed_tools": "",       # comma-separated tool allowlist (empty = all)
+    "max_upload_mb": 20,       # max file upload size in MB
+    "timezone": "Asia/Seoul",  # scheduler timezone
 }
 
 

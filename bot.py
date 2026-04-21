@@ -25,14 +25,22 @@ from telegram.ext import (
 
 from handlers.commands import (
     callback_query,
+    cmd_allowedtools,
+    cmd_cancel,
     cmd_config,
     cmd_delegate,
+    cmd_download,
+    cmd_fork,
+    cmd_instruction,
     cmd_new,
+    cmd_procs,
     cmd_resume,
     cmd_schedule,
     cmd_sessions,
     cmd_start,
+    cmd_status,
     cmd_usage,
+    cmd_wd,
 )
 from handlers.file import handle_file
 from handlers.message import handle_message
@@ -132,6 +140,13 @@ def _restore_schedules(app: Application) -> None:
             logger.warning("Invalid cron for schedule %s: %s", s["id"], s["cron"])
             continue
 
+        from config_store import get_config as _get_cfg
+        tz = _get_cfg(int(s["chat_id"])).get("timezone") or "Asia/Seoul"
+        try:
+            cron_kwargs = parse_cron(s["cron"], tz)
+        except ValueError:
+            cron_kwargs = parse_cron(s["cron"])
+
         from handlers.commands import _scheduled_job
         app.job_queue.run_custom(
             _scheduled_job,
@@ -160,20 +175,28 @@ def main() -> None:
     # Commands
     app.add_handler(CommandHandler("start", _wrap_auth(cmd_start)))
     app.add_handler(CommandHandler("new", _wrap_auth(cmd_new)))
+    app.add_handler(CommandHandler("fork", _wrap_auth(cmd_fork)))
     app.add_handler(CommandHandler("sessions", _wrap_auth(cmd_sessions)))
     app.add_handler(CommandHandler("resume", _wrap_auth(cmd_resume)))
     app.add_handler(CommandHandler("schedule", _wrap_auth(cmd_schedule)))
     app.add_handler(CommandHandler("schedules", _wrap_auth(cmd_schedule)))  # alias
     app.add_handler(CommandHandler("delegate", _wrap_auth(cmd_delegate)))
     app.add_handler(CommandHandler("config", _wrap_auth(cmd_config)))
+    app.add_handler(CommandHandler("instruction", _wrap_auth(cmd_instruction)))
+    app.add_handler(CommandHandler("allowedtools", _wrap_auth(cmd_allowedtools)))
+    app.add_handler(CommandHandler("download", _wrap_auth(cmd_download)))
     app.add_handler(CommandHandler("usage", _wrap_auth(cmd_usage)))
+    app.add_handler(CommandHandler("cancel", _wrap_auth(cmd_cancel)))
+    app.add_handler(CommandHandler("status", _wrap_auth(cmd_status)))
+    app.add_handler(CommandHandler("procs", _wrap_auth(cmd_procs)))
+    app.add_handler(CommandHandler("wd", _wrap_auth(cmd_wd)))
 
     # Inline button callbacks
     app.add_handler(CallbackQueryHandler(callback_query))
 
-    # Shell commands (! prefix)
+    # Shell commands (! prefix — sync; !& prefix — background)
     app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r"^!") & ~filters.COMMAND,
+        filters.TEXT & filters.Regex(r"^!&?") & ~filters.COMMAND,
         _wrap_auth(handle_shell),
     ))
 

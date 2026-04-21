@@ -25,6 +25,8 @@ class Backend(Protocol):
         session_id: str | None,
         system_prompt: str | None,
         work_dir: str | None,
+        allowed_tools: list[str] | None = None,
+        fork: bool = False,
     ) -> AsyncGenerator[tuple[str, str | None, dict | None], None]: ...
 
     async def run(
@@ -34,4 +36,6 @@ class Backend(Protocol):
         session_id: str | None,
         system_prompt: str | None,
         work_dir: str | None,
+        allowed_tools: list[str] | None = None,
+        fork: bool = False,
     ) -> BackendResult: ...

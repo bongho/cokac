@@ -5,11 +5,13 @@ import asyncio
 import time
 from pathlib import Path
 
+from config_store import get_config
 from telegram import Update
 from telegram.ext import ContextTypes
 
 UPLOAD_DIR = Path.home() / ".cokac" / "uploads"
 UPLOAD_TTL = 1800  # 30분
+DEFAULT_MAX_UPLOAD_MB = 20
 
 
 def _pending_key(chat_id: int) -> str:
@@ -20,11 +22,23 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """Download the uploaded file and store the path for next message."""
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+    chat_id = update.effective_chat.id
+    cfg = get_config(chat_id)
+    max_mb = int(cfg.get("max_upload_mb") or DEFAULT_MAX_UPLOAD_MB)
+
     doc = update.message.document
     photo = update.message.photo
     caption = update.message.caption or ""
 
     if doc:
+        file_size = doc.file_size or 0
+        if file_size > max_mb * 1024 * 1024:
+            await update.message.reply_text(
+                f"❌ 파일이 너무 큽니다: {file_size / 1024 / 1024:.1f}MB (최대 {max_mb}MB)\n"
+                f"변경: `/config set max_upload_mb <숫자>`",
+                parse_mode="Markdown",
+            )
+            return
         tg_file = await doc.get_file()
         filename = doc.file_name or f"file_{int(time.time())}"
     elif photo:
@@ -38,7 +52,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await tg_file.download_to_drive(str(dest))
 
     # 파일 경로를 chat context에 저장
-    chat_id = update.effective_chat.id
     key = _pending_key(chat_id)
     pending: list[dict] = context.chat_data.get(key, [])
     pending.append({"path": str(dest), "expires_at": time.time() + UPLOAD_TTL})
@@ -56,8 +69,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if caption:
         ack += f"\n다음 메시지에서 자동으로 컨텍스트에 포함됩니다."
         # 캡션이 있으면 즉시 메시지로 처리
-        from handlers.message import _run_claude_streaming
-        await _run_claude_streaming(update, context, caption, extra_files=[str(dest)])
+        from handlers.message import trigger_claude
+        await trigger_claude(update, context, caption, extra_files=[str(dest)])
         # pending에서 제거
         context.chat_data[key] = [p for p in pending if p["path"] != str(dest)]
     else:
