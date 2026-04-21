@@ -13,7 +13,8 @@ try:
 except ImportError:
     pass
 
-from telegram import Update
+import msg_store
+from telegram import Bot, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -22,6 +23,35 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
+
+class _TrackedBot(Bot):
+    """Bot subclass that logs all sent message IDs for /clear support."""
+
+    async def send_message(self, chat_id, *args, **kwargs):
+        msg = await super().send_message(chat_id, *args, **kwargs)
+        if msg:
+            _log_out(chat_id, msg.message_id)
+        return msg
+
+    async def send_document(self, chat_id, *args, **kwargs):
+        msg = await super().send_document(chat_id, *args, **kwargs)
+        if msg:
+            _log_out(chat_id, msg.message_id)
+        return msg
+
+
+def _log_out(chat_id, message_id: int) -> None:
+    try:
+        msg_store.log(int(chat_id), message_id)
+    except Exception:
+        pass
+
+
+async def _log_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log every incoming message ID (group=-1, runs before all handlers)."""
+    if update.effective_chat and update.message:
+        msg_store.log(update.effective_chat.id, update.message.message_id)
 
 from handlers.commands import (
     callback_query,
@@ -178,7 +208,7 @@ def main() -> None:
         logger.error("TELEGRAM_BOT_TOKEN is not set. Create ~/.cokac/.env with the token.")
         sys.exit(1)
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().bot(_TrackedBot(token=token)).build()
 
     # Commands
     app.add_handler(CommandHandler("start", _wrap_auth(cmd_start)))
@@ -206,6 +236,9 @@ def main() -> None:
     app.add_handler(CommandHandler("debug", _wrap_auth(cmd_debug)))
     app.add_handler(CommandHandler("envvars", _wrap_auth(cmd_envvars)))
     app.add_handler(CommandHandler("ws", _wrap_auth(cmd_ws)))
+
+    # Log all incoming message IDs for /clear (runs before other handlers)
+    app.add_handler(MessageHandler(filters.ALL, _log_incoming), group=-1)
 
     # Inline button callbacks
     app.add_handler(CallbackQueryHandler(callback_query))

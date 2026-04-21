@@ -500,20 +500,45 @@ async def _set_wd(update_or_query, chat_id: int, path: str) -> None:
 
 
 # ──────────────────────────────────────────────
-# /clear — 다음 메시지를 새 세션으로 시작
+# /clear — 메시지 일괄 삭제 + 새 세션 준비
 # ──────────────────────────────────────────────
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import msg_store
+
     chat_id = update.effective_chat.id
     config_store.set_config(chat_id, "pending_new_session", "true")
-    latest = session_store.get_latest_session_id(chat_id)
-    prev = f"`{latest[:12]}...`" if latest else "(없음)"
-    await update.message.reply_text(
-        f"🧹 컨텍스트 초기화됨\n\n"
-        f"이전 세션: {prev}\n"
-        f"다음 메시지부터 새 Claude 세션으로 시작합니다.\n\n"
-        f"_기존 세션은 `/sessions`에서 계속 확인할 수 있습니다._",
+
+    msg_ids = msg_store.get_ids(chat_id)
+    msg_ids.append(update.message.message_id)  # /clear 커맨드 메시지 자체도 포함
+    msg_store.clear(chat_id)
+
+    deleted = 0
+    failed = 0
+    for i in range(0, len(msg_ids), 100):
+        batch = msg_ids[i:i + 100]
+        try:
+            await context.bot.delete_messages(chat_id, batch)
+            deleted += len(batch)
+        except Exception:
+            for mid in batch:
+                try:
+                    await context.bot.delete_message(chat_id, mid)
+                    deleted += 1
+                except Exception:
+                    failed += 1
+
+    confirm = await context.bot.send_message(
+        chat_id,
+        f"🧹 *{deleted}개* 메시지 삭제됨"
+        + (f" _(사용자 메시지 {failed}개는 Telegram 제한으로 삭제 불가)_" if failed else "")
+        + "\n\n다음 메시지부터 새 세션으로 시작합니다.",
         parse_mode="Markdown",
     )
+    await asyncio.sleep(4)
+    try:
+        await confirm.delete()
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────
